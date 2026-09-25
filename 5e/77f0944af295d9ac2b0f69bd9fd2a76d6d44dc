@@ -1,0 +1,43 @@
+README.md
+  s_0af93a0e17570e::t_1066407920a8e8 219-220,228-235
+README.zh.md
+  s_0af93a0e17570e::t_8fbb2b9d98f4c2 209-210,218-223
+cli/src/commands.rs
+  s_0af93a0e17570e::t_c8ac0bbfd28734 2536-2537,2539-2543,2545-2548,2550-2553,2555-2558,2560,2572,2650,2652-2657,6551,6696-6714,6768,6775-6789
+cli/src/native/actions.rs
+  s_0af93a0e17570e::t_5744f2f118c2dc 403-404,494,8555-8562,8576-8583,8637,8662-8670,8681-8686,8834-8839,8846-8848,8856-8861,8878-8889,8900-8906,15377,15388-15400,15403-15404,15416-15435,15453-15456
+cli/src/native/browser.rs
+  s_0af93a0e17570e::t_17653137ceb258 639-641,706-707,743-747,1318-1320,1372-1377,1427,1433-1434,1615-1628,2901-2903,3168-3178,3236-3237,3245-3257,3304,3714-3731,4243-4251,4265-4267,4728,4730-4733,4780-4784
+cli/src/native/e2e_tests.rs
+  s_0af93a0e17570e::t_7e0929bb96a0f0 3-5,9341-9846
+cli/src/output.rs
+  s_0af93a0e17570e::t_3c11c312eb9922 3403,3408-3410,3424-3433,3444,3449,3451,4722-4728
+docs/commands.html
+  s_0af93a0e17570e::t_6840f1289e7e2d 432,437,439,454,466-473
+docs/en/commands.html
+  s_0af93a0e17570e::t_10b86a008f7797 445,450,452,469,481-489
+docs/en/troubleshooting.html
+  s_0af93a0e17570e::t_3465f63bb74698 227-235
+docs/troubleshooting.html
+  s_0af93a0e17570e::t_d5e03ac1900572 215-220
+skill-data/core/references/commands.md
+  s_0af93a0e17570e::t_1384b7b5b72b5b 361,366,368,414-417,419-430
+skill-data/core/references/troubleshooting.md
+  s_0af93a0e17570e::t_f2f22e9b1cdb1c 69-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5e77f0944af295d9ac2b0f69bd9fd2a76d6d44dc",
+  "prompts": {},
+  "sessions": {
+    "s_0af93a0e17570e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0d30e-7607-7fb2-abc3-91f3e46fd369",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AT <atxiesz@gmail.com>"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+README.md
+  s_0af93a0e17570e::t_a84f86a018c0e3 219
+README.zh.md
+  s_0af93a0e17570e::t_522f7cd7c0cb17 209
+cli/src/native/browser.rs
+  s_0af93a0e17570e::t_add1947c8f9fe4 1316-1318,1370-1375,1425,1431-1432
+cli/src/native/e2e_tests.rs
+  s_0af93a0e17570e::t_f1eb49626e3a28 9341-9422
+cli/src/output.rs
+  s_0af93a0e17570e::t_f5c8e5c0fa3662 4709
+docs/commands.html
+  s_0af93a0e17570e::t_2355d1d46fbc5e 451
+docs/en/commands.html
+  s_0af93a0e17570e::t_18eacd7311b7f2 466
+skill-data/core/references/commands.md
+  s_0af93a0e17570e::t_4c33ceb47cb7ef 411-414
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6fa0f12a0140cc611bb265e4c875d067bd1ad586",
+  "prompts": {},
+  "sessions": {
+    "s_0af93a0e17570e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0d30e-7607-7fb2-abc3-91f3e46fd369",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AT <atxiesz@gmail.com>"
+    }
+  }
+}

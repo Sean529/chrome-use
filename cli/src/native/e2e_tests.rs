@@ -9525,6 +9525,8 @@ mod background_activation {
                         "Target.getTargetInfo" => json!({
                             "targetInfo":targets.iter().find(|item| {
                                 item["targetId"] == command["params"]["targetId"]
+                                    .as_str()
+                                    .unwrap_or(target)
                             }).unwrap()
                         }),
                         "Target.attachToTarget" => json!({

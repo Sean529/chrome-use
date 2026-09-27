@@ -9522,6 +9522,11 @@ mod background_activation {
                     }
                     let result = match method {
                         "Target.getTargets" => json!({"targetInfos":targets}),
+                        "Target.getTargetInfo" => json!({
+                            "targetInfo":targets.iter().find(|item| {
+                                item["targetId"] == command["params"]["targetId"]
+                            }).unwrap()
+                        }),
                         "Target.attachToTarget" => json!({
                             "sessionId":format!("session-{}", command["params"]["targetId"].as_str().unwrap())
                         }),

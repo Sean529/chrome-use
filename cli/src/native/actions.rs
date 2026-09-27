@@ -2826,6 +2826,27 @@ async fn apply_stealth_to_browser(state: &DaemonState) -> bool {
     apply_stealth_to_session(state, &session_id).await
 }
 
+/// Finish retained-tab setup before selection or capture can report success.
+/// Keep the marker on failure so the same target remains recoverable.
+async fn finish_pending_tab_setup(state: &mut DaemonState) -> Result<(), String> {
+    let target = state
+        .browser
+        .as_ref()
+        .and_then(|mgr| mgr.active_target_id().ok())
+        .map(ToString::to_string);
+    if let Some(target) = target {
+        if state.pending_new_tab_setup.contains(&target) {
+            if !apply_stealth_to_browser(state).await {
+                return Err(format!(
+                    "tab_initialization_incomplete: tab {target} is selected but stealth setup failed. Retry `tab select {target}` to finish setup without creating or reloading a tab."
+                ));
+            }
+            state.pending_new_tab_setup.remove(&target);
+        }
+    }
+    Ok(())
+}
+
 /// If the previous daemon left a `.restore-url` sidecar (because it was killed
 /// by a version-mismatch restart), navigate the freshly-connected browser to
 /// that URL so `chrome-use get url` after `npm i -g` upgrade still reports
@@ -5247,6 +5268,7 @@ async fn handle_screenshot(cmd: &Value, state: &mut DaemonState) -> Result<Value
             switched_to_inactive_tab = true;
         }
     }
+    finish_pending_tab_setup(state).await?;
     // Waking Chrome's GPU compositor:
     // Background and occluded tabs stop producing frames in headful Chrome,
     // which causes Page.captureScreenshot to stall indefinitely until the
@@ -8582,21 +8604,17 @@ async fn handle_tab_new(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
     // Initialization failure can still select the retained new target. Commit
     // the context switch before returning the error, so old refs cannot leak.
     if result.is_err() && old_target != new_target {
-        if let Some(target) = new_target {
-            state.pending_new_tab_setup.insert(target);
+        if let Some(target) = new_target.as_ref() {
+            state.pending_new_tab_setup.insert(target.clone());
         }
     }
     let result = result?;
-    // A new tab is a new CDP session; stealth scripts registered on the prior
-    // session don't carry over, so patch the new tab too.
-    if let Some(sid) = state
-        .browser
-        .as_ref()
-        .and_then(|m| m.active_session_id().ok())
-        .map(|s| s.to_string())
-    {
-        apply_stealth_to_session(state, &sid).await;
+    // Stealth is part of initialization, not a best-effort success. A failed
+    // first application must be retried on the same retained target too.
+    if let Some(target) = new_target {
+        state.pending_new_tab_setup.insert(target);
     }
+    finish_pending_tab_setup(state).await?;
     Ok(result)
 }
 
@@ -8685,16 +8703,7 @@ async fn handle_tab_switch(cmd: &Value, state: &mut DaemonState) -> Result<Value
     }
 
     let mut result = result?;
-    if let Some(target) = new_target.as_ref() {
-        if state.pending_new_tab_setup.contains(target) {
-            if !apply_stealth_to_browser(state).await {
-                return Err(format!(
-                    "tab_initialization_incomplete: tab {target} is selected but stealth setup failed. Retry `tab select {target}` to finish setup without creating or reloading a tab."
-                ));
-            }
-            state.pending_new_tab_setup.remove(target);
-        }
-    }
+    finish_pending_tab_setup(state).await?;
     let mgr = state.browser.as_mut().ok_or("Browser not launched")?;
 
     // Liveness probe: confirm the new session actually answers before we report

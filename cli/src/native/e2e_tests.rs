@@ -9787,6 +9787,50 @@ mod background_activation {
     }
 
     #[tokio::test]
+    async fn e2e_mock_tab_stealth_failure_is_recoverable_and_blocks_capture() {
+        let fixture = ActivationCdpFixture::start().await;
+        let mut state = fixture.connect().await;
+        *fixture.fail_scripts.lock().unwrap() = true;
+        let failed = execute_bounded(
+            &fixture,
+            &mut state,
+            json!({"id":"new", "action":"tab_new"}),
+        )
+        .await;
+        assert_eq!(failed["success"], false, "{failed}");
+        assert!(failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("stealth setup failed"));
+        for tab in [Value::Null, json!("created-1")] {
+            let shot = execute_bounded(
+                &fixture,
+                &mut state,
+                json!({"id":"capture", "action":"screenshot", "tab":tab}),
+            )
+            .await;
+            assert_eq!(shot["success"], false, "{shot}");
+            assert!(shot["error"]
+                .as_str()
+                .unwrap()
+                .contains("stealth setup failed"));
+        }
+        assert!(!fixture
+            .commands()
+            .iter()
+            .any(|command| command["method"] == "Page.captureScreenshot"));
+        *fixture.fail_scripts.lock().unwrap() = false;
+        let recovered = execute_bounded(
+            &fixture,
+            &mut state,
+            json!({"id":"recover", "action":"tab_switch", "tabId":"created-1"}),
+        )
+        .await;
+        assert_success(&recovered);
+        assert_eq!(recovered["data"]["verified"], "confirmed");
+    }
+
+    #[tokio::test]
     async fn e2e_mock_tab_initialization_timeout_preserves_recoverable_target() {
         let fixture = ActivationCdpFixture::start().await;
         let mut state = fixture.connect().await;

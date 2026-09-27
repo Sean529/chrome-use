@@ -2774,9 +2774,9 @@ fn stealth_enabled() -> bool {
 /// tabs or cross-origin iframe sessions created after the initial page. We must
 /// re-apply to every session the user can touch, otherwise automation markers
 /// (and, in FullLaunch mode, the HeadlessChrome UA) leak on those surfaces.
-async fn apply_stealth_via_mgr(mgr: &BrowserManager, session_id: &str) {
+async fn apply_stealth_via_mgr(mgr: &BrowserManager, session_id: &str) -> bool {
     if !stealth_enabled() {
-        return;
+        return true;
     }
     // Determine mode: an external attach uses minimal patches (the user's real
     // Chrome already has a genuine fingerprint — heavy patches create detectable
@@ -2787,8 +2787,10 @@ async fn apply_stealth_via_mgr(mgr: &BrowserManager, session_id: &str) {
         stealth::StealthMode::FullLaunch
     };
     let locale = env::var("AGENT_BROWSER_LOCALE").ok();
+    let mut applied = true;
     if let Err(e) = stealth::apply_stealth(&mgr.client, session_id, mode, locale.as_deref()).await {
         eprintln!("[stealth] failed to apply patches to session {session_id}: {e}");
+        applied = false;
     }
     // Also inject into the current page (already loaded before our init script).
     if let Err(e) =
@@ -2796,28 +2798,32 @@ async fn apply_stealth_via_mgr(mgr: &BrowserManager, session_id: &str) {
             .await
     {
         eprintln!("[stealth] failed to patch current page for session {session_id}: {e}");
+        applied = false;
     }
+    applied
 }
 
 /// Apply stealth to a specific session of the active browser (no-op if no
 /// browser or stealth disabled).
-async fn apply_stealth_to_session(state: &DaemonState, session_id: &str) {
+async fn apply_stealth_to_session(state: &DaemonState, session_id: &str) -> bool {
     if let Some(ref mgr) = state.browser {
-        apply_stealth_via_mgr(mgr, session_id).await;
+        apply_stealth_via_mgr(mgr, session_id).await
+    } else {
+        false
     }
 }
 
 /// Apply stealth to the active page session (initial connect/launch).
-async fn apply_stealth_to_browser(state: &DaemonState) {
+async fn apply_stealth_to_browser(state: &DaemonState) -> bool {
     let session_id = match state
         .browser
         .as_ref()
         .and_then(|m| m.active_session_id().ok())
     {
         Some(sid) => sid.to_string(),
-        None => return,
+        None => return false,
     };
-    apply_stealth_to_session(state, &session_id).await;
+    apply_stealth_to_session(state, &session_id).await
 }
 
 /// If the previous daemon left a `.restore-url` sidecar (because it was killed
@@ -8680,8 +8686,13 @@ async fn handle_tab_switch(cmd: &Value, state: &mut DaemonState) -> Result<Value
 
     let mut result = result?;
     if let Some(target) = new_target.as_ref() {
-        if state.pending_new_tab_setup.remove(target) {
-            apply_stealth_to_browser(state).await;
+        if state.pending_new_tab_setup.contains(target) {
+            if !apply_stealth_to_browser(state).await {
+                return Err(format!(
+                    "tab_initialization_incomplete: tab {target} is selected but stealth setup failed. Retry `tab select {target}` to finish setup without creating or reloading a tab."
+                ));
+            }
+            state.pending_new_tab_setup.remove(target);
         }
     }
     let mgr = state.browser.as_mut().ok_or("Browser not launched")?;

@@ -9442,6 +9442,7 @@ mod background_activation {
         endpoint: String,
         commands: Arc<Mutex<Vec<Value>>>,
         blocked: Arc<Mutex<HashMap<String, BlockedRenderer>>>,
+        fail_scripts: Arc<Mutex<bool>>,
         unexpected_method: Arc<Mutex<Option<String>>>,
         task: tokio::task::JoinHandle<()>,
     }
@@ -9461,6 +9462,8 @@ mod background_activation {
             );
             let commands = Arc::new(Mutex::new(Vec::new()));
             let blocked = Arc::new(Mutex::new(HashMap::new()));
+            let fail_scripts = Arc::new(Mutex::new(false));
+            let script_failure = Arc::clone(&fail_scripts);
             let unexpected_method = Arc::new(Mutex::new(None));
             let recorded = Arc::clone(&commands);
             let blocked_renderers = Arc::clone(&blocked);
@@ -9480,6 +9483,19 @@ mod background_activation {
                     let command: Value = serde_json::from_str(&text).unwrap();
                     recorded.lock().unwrap().push(command.clone());
                     let method = command["method"].as_str().unwrap();
+                    if method == "Page.addScriptToEvaluateOnNewDocument"
+                        && *script_failure.lock().unwrap()
+                    {
+                        let response = json!({
+                            "id":command["id"], "sessionId":command["sessionId"],
+                            "error":{"code":-32000,"message":"fixture script registration failed"}
+                        });
+                        websocket
+                            .send(Message::Text(response.to_string()))
+                            .await
+                            .unwrap();
+                        continue;
+                    }
                     let target = command["sessionId"]
                         .as_str()
                         .and_then(|session| session.strip_prefix("session-"))
@@ -9581,6 +9597,7 @@ mod background_activation {
                 endpoint,
                 commands,
                 blocked,
+                fail_scripts,
                 unexpected_method,
                 task,
             }
@@ -9799,6 +9816,29 @@ mod background_activation {
         assert_eq!(retained["ownership"], "created");
         assert_eq!(retained["label"], "work");
 
+        // Recovery must not consume its pending setup marker on a patch failure.
+        // A second selection must retry registration on the same retained tab.
+        *fixture.fail_scripts.lock().unwrap() = true;
+        let failed_setup = execute_bounded(
+            &fixture,
+            &mut state,
+            json!({
+                "id":"retry-fails", "action":"tab_switch", "tabId":"created-1", "activate":true
+            }),
+        )
+        .await;
+        assert_eq!(failed_setup["success"], false, "{failed_setup}");
+        assert!(failed_setup["error"]
+            .as_str()
+            .unwrap()
+            .contains("stealth setup failed"));
+        let registrations_before_retry = fixture
+            .commands()
+            .iter()
+            .filter(|command| command["method"] == "Page.addScriptToEvaluateOnNewDocument")
+            .count();
+        *fixture.fail_scripts.lock().unwrap() = false;
+
         let recovered = execute_bounded(
             &fixture,
             &mut state,
@@ -9810,6 +9850,14 @@ mod background_activation {
         assert_success(&recovered);
         assert_eq!(recovered["data"]["verified"], "confirmed");
         assert_eq!(recovered["data"]["tabId"], retained["tabId"]);
+        assert!(
+            fixture
+                .commands()
+                .iter()
+                .filter(|command| command["method"] == "Page.addScriptToEvaluateOnNewDocument")
+                .count()
+                > registrations_before_retry
+        );
         let commands = fixture.commands();
         assert_eq!(
             commands

@@ -1,0 +1,35 @@
+README.md
+  s_14d877aa78def8::t_d5bd6679585d90 228
+README.zh.md
+  s_14d877aa78def8::t_1379d19e6eab39 218
+cli/src/connect.rs
+  s_14d877aa78def8::t_bfec6b6d6f5823 2684-2737,3463-3512
+cli/src/main.rs
+  s_14d877aa78def8::t_5db2807cf49ae8 963,966-967
+cli/src/output.rs
+  s_14d877aa78def8::t_54bec2ef72f0a8 4578-4581
+docs/en/troubleshooting.html
+  s_14d877aa78def8::t_9a7cf4bf24b413 476
+docs/troubleshooting.html
+  s_14d877aa78def8::t_ac2d8557b1cc3a 445
+skill-data/core/SKILL.md
+  s_14d877aa78def8::t_aa8cf1269aca8c 20-23
+skill-data/core/references/troubleshooting.md
+  s_14d877aa78def8::t_e725d4b31aa767 162-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8c6fb0a9e1f5bb78e8de61b37db2385c4329be6a",
+  "prompts": {},
+  "sessions": {
+    "s_14d877aa78def8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a10ef2-b7ed-7ee3-9dea-14c6b31c138a",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AT <atxiesz@gmail.com>"
+    }
+  }
+}

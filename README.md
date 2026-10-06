@@ -225,7 +225,7 @@ The agent operates in your Chrome: you'll see tabs opening, pages loading, click
 | `chrome-use session list` · `session stop [name]` | Manage session workers |
 | `chrome-use auth login --bwu [--item <id\|name>]` | Fill the current login page from Bitwarden; handles TOTP and supported passkey second factors |
 | `chrome-use auth login --bwu --passkey` | Sign in with a vault passkey in `--launch` mode (bwu 0.9.0+) |
-| `chrome-use status` | Relay, profile, extension, and session health |
+| `chrome-use status` | Relay, profile, extension, and session health; verifies an extension reply within 10 seconds |
 
 A field that shows your text is not proof the page saved it. `fill` warns
 when the form's Save/Submit was disabled before the edit and still is,

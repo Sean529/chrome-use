@@ -442,7 +442,7 @@ EOF</code></pre>
       </p>
       <ul>
         <li><strong>直接重试这条命令</strong>——中继通常这会儿已经重连好了。</li>
-        <li>还不行：用不依赖 daemon 的 <code>chrome-use status</code> 查看 CLI、扩展、中继、profile 与当前会话，再 <code>chrome-use extension connect</code>
+        <li>还不行：不依赖 daemon 的 <code>chrome-use status</code> 会用最长 10 秒的扩展响应探测验证连接，不把遗留地址文件当作在线；这不代表页面渲染器可响应。用它查看 CLI、扩展、中继、profile 与当前会话，再 <code>chrome-use extension connect</code>
           （或友好别名 <code>chrome-use reconnect</code>）重新挂上，然后重试。</li>
         <li><strong>永远不要</strong>让用户用 <code>--remote-debugging-port</code> 退出/重启 Chrome 来恢复中继——
           那会丢掉他们的标签页，也废掉了扩展路径。</li>

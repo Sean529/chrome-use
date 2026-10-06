@@ -17,6 +17,10 @@ restart the runner or reload its skills afterward. Use `--project` for a local
 install. For directory mappings and installer failures, load
 `chrome-use skills get core/installation`.
 
+`chrome-use status` probes the extension for up to 10 seconds without a session
+daemon. Stale relay files do not count as online. A healthy relay does not prove
+that an individual page renderer responds; verify the intended page separately.
+
 ## Start with the cheapest useful evidence
 
 | Task | First choice |

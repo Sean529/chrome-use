@@ -159,3 +159,13 @@ chrome-use stealth status --json      #   (webdriver/chrome/plugins/UA) + applie
 `doctor` auto-cleans stale socket/pid/version sidecar files on every run.
 Destructive actions require `--fix`. Exit code is `0` if all checks pass
 (warnings OK), `1` if any fail.
+
+`status` requires a live extension reply within 10 seconds. It hides cached profile
+and version data when the probe fails. It does not create a session or tab, and
+browser-level health is distinct from renderer responsiveness.
+
+The probe uses a target-free `ABExt.inspectTab` validation reply, including on
+extensions predating the generic call API. Extensions without inspectTab cannot
+confirm health. A timeout means no confirmation within the deadline, not proof
+of a permanent disconnect. Opening the relay connection retains its existing
+owned-target reannouncement behavior.

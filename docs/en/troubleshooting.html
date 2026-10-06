@@ -473,7 +473,7 @@ EOF</code></pre>
       </p>
       <ul>
         <li><strong>Just retry the command</strong>—the relay has usually reconnected by now.</li>
-        <li>Still failing: use daemon-free <code>chrome-use status</code> for CLI, extension, relay, profile, and current-session health, then reattach with <code>chrome-use extension connect</code>
+        <li>Still failing: use daemon-free <code>chrome-use status</code> (requires an extension reply within 10 seconds, not a stale endpoint file; it does not verify renderer responsiveness) for CLI, extension, relay, profile, and current-session health, then reattach with <code>chrome-use extension connect</code>
           (or the friendly alias <code>chrome-use reconnect</code>), then retry.</li>
         <li><strong>Never</strong> have the user quit/restart Chrome with <code>--remote-debugging-port</code> to recover the
           relay—that loses their tabs and breaks the extension path too.</li>

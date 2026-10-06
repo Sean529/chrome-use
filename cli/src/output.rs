@@ -4575,6 +4575,10 @@ Reports the installed CLI version, native host and extension relay state,
 live versus bundled extension version, driving Chrome profile, current session,
 and all running session daemons. Because this command is daemon-free, use it as
 the first check when browser commands are hanging.
+Relay health requires an extension reply within 10 seconds, not merely a saved
+endpoint file. A down result also hides cached profile/version information.
+This browser-level check does not prove that a page renderer is responsive.
+Extensions predating inspectTab cannot confirm health; update them if this check fails.
 
 If a browser command reports that a session endpoint disappeared, rerun the
 command. chrome-use clears the unreachable worker and recreates the endpoint.

@@ -2681,6 +2681,60 @@ pub fn relay_url() -> Option<String> {
         .map(|(_, _, ws)| ws)
 }
 
+/// Probe the extension through its native relay, without a session daemon or
+/// renderer command. Sidecar files survive abrupt host exits, so their existence
+/// is not liveness. The read-only inspectTab request omits a target, so supported extensions
+/// answer with a known validation error without inspecting or changing any tab.
+/// Very old extensions without inspectTab cannot confirm health with this probe.
+/// Connecting still invokes the relay's existing owned-target reannouncement.
+pub fn relay_is_responsive() -> bool {
+    let Some(url) = relay_url() else { return false };
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    runtime.block_on(probe_relay(&url, std::time::Duration::from_secs(10)))
+}
+
+async fn probe_relay(url: &str, budget: std::time::Duration) -> bool {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    tokio::time::timeout(budget, async {
+        let (mut ws, _) = tokio_tungstenite::connect_async(url).await.ok()?;
+        ws.send(Message::Text(
+            serde_json::json!({
+                "id": 1, "method": "ABExt.inspectTab", "params": {}
+            })
+            .to_string(),
+        ))
+        .await
+        .ok()?;
+        while let Some(Ok(message)) = ws.next().await {
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let Ok(reply) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if reply.get("id").and_then(|id| id.as_u64()) == Some(1) {
+                // This exact validation error is generated in the extension, not
+                // synthesized by the relay. It also works on pre-call extensions.
+                let ok = reply.pointer("/error/message").and_then(|v| v.as_str())
+                    == Some("inspectTab: no tab matches the requested session or target");
+                // Drop rather than await the close handshake: health has a fixed budget.
+                return Some(ok);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+
 /// Append a one-line record of how a CDP connection was established, to
 /// `~/.chrome-use/connect-mode.log`. This is the smoking-gun detector for the
 /// "Allow remote debugging?" consent modal: that modal ONLY appears on a raw
@@ -3405,6 +3459,56 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::path::Path;
+
+    #[tokio::test]
+    async fn relay_probe_requires_extension_reply_not_just_an_open_socket() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        for mode in ["reply", "error", "unsupported", "local_success", "silent"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let msg = ws.next().await.unwrap().unwrap();
+                let cmd: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+                assert_eq!(cmd["method"], "ABExt.inspectTab");
+                assert_eq!(cmd["params"], json!({}));
+                // Events must not be mistaken for the response.
+                ws.send(Message::Text(
+                    json!({"method":"Target.targetCreated"}).to_string(),
+                ))
+                .await
+                .unwrap();
+                if mode != "silent" {
+                    let reply = if mode == "reply" {
+                        json!({"id":1,"error":{"message":"inspectTab: no tab matches the requested session or target"}})
+                    } else if mode == "local_success" {
+                        json!({"id":1,"result":{}})
+                    } else if mode == "unsupported" {
+                        json!({"id":1,"error":{"message":"method not found"}})
+                    } else {
+                        json!({"id":1,"error":{"message":"extension disconnected"}})
+                    };
+                    ws.send(Message::Text(reply.to_string())).await.unwrap();
+                }
+                let _ = ws.next().await;
+            });
+            assert_eq!(
+                probe_relay(&url, std::time::Duration::from_millis(200)).await,
+                mode == "reply"
+            );
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_probe_rejects_a_stale_endpoint() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        drop(listener);
+        assert!(!probe_relay(&url, std::time::Duration::from_millis(200)).await);
+    }
 
     fn profile(dir: &str, email: Option<&str>, with_ext: bool) -> ChromeProfileInfo {
         ChromeProfileInfo {

@@ -269,6 +269,13 @@ pub async fn run_daemon(session: &str) {
     )
     .await;
 
+    // The binding records (#472) are only this daemon's to delete while it is
+    // still the session's registered daemon, decided under the binding gate
+    // a relay recovery holds while it deregisters and stops us (see
+    // `connection::clear_binding_at_daemon_exit`). Done first, while our pid
+    // file is still ours to be checked against.
+    crate::connection::clear_binding_at_daemon_exit(session, process::id());
+
     #[cfg(unix)]
     {
         let _ = fs::remove_file(&socket_path);
@@ -284,7 +291,6 @@ pub async fn run_daemon(session: &str) {
     let _ = fs::remove_file(socket_dir.join(format!("{}.engine", session)));
     let _ = fs::remove_file(socket_dir.join(format!("{}.provider", session)));
     let _ = fs::remove_file(socket_dir.join(format!("{}.extensions", session)));
-    let _ = fs::remove_file(socket_dir.join(format!("{}.profile", session)));
 
     if let Err(e) = result {
         let _ = writeln!(std::io::stderr(), "Daemon error: {}", e);
@@ -775,6 +781,27 @@ mod idle_tests {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    /// #472: a daemon deregistered by a relay recovery must not delete the
+    /// session's binding records when it finally exits.
+    #[test]
+    fn only_the_registered_daemon_may_clear_the_binding_at_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("s.pid");
+        assert!(
+            !crate::connection::registered_as(&pid_path, 4242),
+            "deregistered (no pid file)"
+        );
+        fs::write(&pid_path, "999999").unwrap();
+        assert!(
+            !crate::connection::registered_as(&pid_path, 4242),
+            "another daemon registered"
+        );
+        fs::write(&pid_path, "4242\n").unwrap();
+        assert!(crate::connection::registered_as(&pid_path, 4242));
+        fs::write(&pid_path, "garbage").unwrap();
+        assert!(!crate::connection::registered_as(&pid_path, 4242));
+    }
 
     #[test]
     fn idle_recycle_preserves_external_tabs_but_closes_launched_browser() {

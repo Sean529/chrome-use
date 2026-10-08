@@ -2961,6 +2961,14 @@ async fn connect_auto_with_fresh_tab() -> Result<BrowserManager, String> {
 /// reconnect guidance. This is what lets a dropped relay self-heal invisibly
 /// instead of erroring or launching a throwaway Chrome. `connect_auto_with_fresh_tab`
 /// only opens a tab on success, so the retries cost nothing while the relay is down.
+/// The extension refused to create an agent tab because no background agent
+/// window could be opened (it never falls back to the user's window). The
+/// relay is fine, so waiting for it to "come back" only turns a clear refusal
+/// into a timeout ("session unresponsive", observed on the build box).
+fn is_agent_window_refusal(error: &str) -> bool {
+    error.contains("could not open the background agent window")
+}
+
 async fn retry_relay_connect_after_wait(mut last_err: String) -> Result<BrowserManager, String> {
     let budget = env::var("AGENT_BROWSER_RELAY_REVIVE_SECS")
         .ok()
@@ -3035,6 +3043,7 @@ async fn auto_launch(state: &mut DaemonState) -> Result<(), String> {
         // erroring or (worse) tearing down and launching a throwaway Chrome.
         let conn = match connect_auto_with_fresh_tab().await {
             Ok(mgr) => Ok(mgr),
+            Err(e) if is_agent_window_refusal(&e) => Err(e),
             Err(e) if crate::connect::host_installed() => retry_relay_connect_after_wait(e).await,
             Err(e) => Err(e),
         };
@@ -3065,6 +3074,9 @@ async fn auto_launch(state: &mut DaemonState) -> Result<(), String> {
                 }
                 // Host installed but the relay never came back within the wait —
                 // point at the cheap reconnect, not a Chrome restart (#54).
+                if is_agent_window_refusal(&e) {
+                    return Err(e);
+                }
                 return Err(auto_connect_failure_message(&e, true));
             }
         }
@@ -3953,6 +3965,7 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         // host is registered, wait for the keepalive to revive it and retry once.
         let conn = match connect_auto_with_fresh_tab().await {
             Ok(mgr) => Ok(mgr),
+            Err(e) if is_agent_window_refusal(&e) => Err(e),
             Err(e) if crate::connect::host_installed() => retry_relay_connect_after_wait(e).await,
             Err(e) => Err(e),
         };
@@ -3980,6 +3993,9 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
                     crate::connect::ensure_host_installed();
                     crate::connect::open_url(crate::connect::STORE_INSTALL_URL);
                     return Err(crate::connect::extension_not_installed_message());
+                }
+                if is_agent_window_refusal(&e) {
+                    return Err(e);
                 }
                 return Err(auto_connect_failure_message(&e, true));
             }
@@ -4127,7 +4143,12 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     apply_stealth_to_browser(state).await;
     try_restore_navigation(state).await;
 
-    Ok(json!({ "launched": true }))
+    // Whether the browser really started with no window: read from the argv
+    // it was spawned with (new headless Chrome reports a plain `Chrome/…`
+    // product, so the version string cannot tell). `doctor` refuses to pass
+    // its launch test without `true` here.
+    let headless = state.browser.as_ref().and_then(|m| m.launched_headless());
+    Ok(json!({ "launched": true, "headless": headless }))
 }
 
 async fn launch_ios(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
@@ -5816,6 +5837,7 @@ async fn handle_close(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
                     Some(session_name.as_str()),
                     &state.session_id,
                     mgr.visited_origins(),
+                    mgr.on_relay(),
                 )
                 .await;
             }
@@ -6735,9 +6757,17 @@ async fn handle_screenshot(cmd: &Value, state: &mut DaemonState) -> Result<Value
     // pointing at the already-active tab) steals the foreground on each shot, so
     // concurrent sessions would fight over which tab is frontmost — the opposite
     // of the multi-tab isolation this path is meant to preserve.
+    //
+    // Never on the extension relay: there `Page.bringToFront` raises the
+    // user's own Chrome window and switches the tab they are looking at, so a
+    // `screenshot --tab` popped the browser over whatever the user was doing.
+    // Relay captures do not need it: background-tab screenshots are taken
+    // `fromSurface` and return in ~50-250ms on the relay (timing.jsonl).
     if switched_to_inactive_tab {
         if let Some(mgr) = state.browser.as_mut() {
-            let _ = mgr.bring_to_front().await;
+            if !mgr.on_relay() {
+                let _ = mgr.bring_to_front().await;
+            }
         }
     }
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
@@ -10695,6 +10725,7 @@ async fn handle_state_save(cmd: &Value, state: &DaemonState) -> Result<Value, St
         state.session_name.as_deref(),
         &state.session_id,
         mgr.visited_origins(),
+        mgr.on_relay(),
     )
     .await?;
 

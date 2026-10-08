@@ -525,6 +525,10 @@ pub struct DaemonState {
     pub event_tracker: EventTracker,
     pub session_name: Option<String>,
     pub session_id: String,
+    /// The current invocation chose its browser explicitly (`_cbSkip`), so
+    /// ChooseBrowser rules do not bind its navigations. Kept across the
+    /// nested commands one top-level command runs (script steps).
+    pub cb_skip: bool,
     pub tracing_state: TracingState,
     pub recording_state: RecordingState,
     event_rx: Option<broadcast::Receiver<CdpEvent>>,
@@ -654,6 +658,7 @@ impl DaemonState {
             event_tracker: EventTracker::new(),
             session_name: env::var("AGENT_BROWSER_SESSION_NAME").ok(),
             session_id: env::var("AGENT_BROWSER_SESSION").unwrap_or_else(|_| "default".to_string()),
+            cb_skip: false,
             tracing_state: TracingState::new(),
             recording_state: RecordingState::new(),
             event_rx: None,
@@ -1709,6 +1714,12 @@ impl Drop for DaemonState {
 /// Clear advisory streaks when an operation has no complete observation.
 /// The CLI sends launch readiness checks before ordinary commands; a successful
 /// reuse on the same connection/target/session is not a new user operation.
+/// The ChooseBrowser skip a top-level command asks for: only an explicit
+/// `_cbSkip: true` skips the rule check.
+pub fn cb_skip_of(cmd: &Value) -> bool {
+    cmd.get("_cbSkip").and_then(Value::as_bool).unwrap_or(false)
+}
+
 pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     fn context(state: &DaemonState) -> Option<(String, String, String)> {
         let manager = state.browser.as_ref()?;
@@ -1718,8 +1729,47 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             manager.active_session_id().ok()?.to_string(),
         ))
     }
+    // ChooseBrowser guard: the one point every navigation passes through,
+    // whichever client sent it (a direct command, a batch step, an MCP tool
+    // call, a script step). A top-level command carries `_cbSkip`; nested
+    // steps inherit the value of the command that runs them.
+    // `state.cb_skip` is set per top-level command by the daemon's socket
+    // handler (absent field = false). A nested step that names its own value
+    // uses it; one that does not inherits its parent's.
+    if let Some(skip) = cmd.get("_cbSkip").and_then(Value::as_bool) {
+        state.cb_skip = skip;
+    }
+    let mut rule_warning: Option<String> = None;
+    let nav_url = match cmd.get("action").and_then(Value::as_str) {
+        Some("navigate") | Some("tab_new") | Some("a11y") => {
+            cmd.get("url").and_then(Value::as_str).map(str::to_string)
+        }
+        _ => None,
+    };
+    if let Some(url) = nav_url {
+        // Not `on_relay()`: that only recognises the generic relay endpoint,
+        // and a session bound to one profile drives that profile's own
+        // endpoint. The guard matches the endpoint against the relay rows.
+        let bound_ws = state.browser.as_ref().map(|m| m.ws_url().to_string());
+        match crate::profiles::guard_navigation(
+            &url,
+            state.cb_skip,
+            bound_ws.as_deref(),
+            &state.session_id,
+        ) {
+            Ok(w) => rule_warning = w,
+            Err(msg) => {
+                let id = cmd.get("id").and_then(Value::as_str).unwrap_or("");
+                return error_response(id, &msg);
+            }
+        }
+    }
     let before = context(state);
-    let response = Box::pin(execute_command_inner(cmd, state)).await;
+    let mut response = Box::pin(execute_command_inner(cmd, state)).await;
+    if let (Some(w), Some(obj)) = (rule_warning, response.as_object_mut()) {
+        let merged = crate::profiles::merge_warning(obj.get("warning").and_then(Value::as_str), &w);
+        obj.insert("warning".to_string(), json!(merged));
+    }
     let unchanged_launch = cmd["action"] == "launch"
         && response["success"] == true
         && response.pointer("/data/reused").and_then(Value::as_bool) == Some(true)

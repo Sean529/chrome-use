@@ -3089,6 +3089,63 @@ pub fn list_relay_profiles() -> Vec<(String, Option<String>, String)> {
     out
 }
 
+/// The relay profile whose host is currently serving `endpoint`, if any.
+///
+/// The endpoint is a per-start `ws://127.0.0.1:<port>/<guid>`, so it changes on
+/// every relay host restart while the profile id does not. Tab ownership is
+/// keyed on this to survive that restart (issue #461). Only the per-profile
+/// sidecars are consulted: the generic `relay-cdp-url` and `relay-ext-profile`
+/// are written at different moments by whichever host ran last, so pairing
+/// them could name the wrong profile, and a wrong answer here hands one
+/// profile's recorded tabs to another. No match means no identity.
+pub fn relay_profile_id_for_endpoint(endpoint: &str) -> Option<String> {
+    let dir = relay_url_path().parent()?.to_path_buf();
+    profile_id_for_endpoint_in(&dir, endpoint)
+}
+
+/// [`relay_profile_id_for_endpoint`] over the sidecars in `dir`.
+///
+/// Every `relay-cdp-url-<id>` in the directory is checked, not just the ones
+/// that pair with a readable profile sidecar ([`list_relay_profiles`] skips
+/// broken pairs, which would let one valid sidecar win while a broken one
+/// claims the same endpoint). Anything that cannot be ruled out refuses: an
+/// unreadable directory or entry, an endpoint sidecar that cannot be read or
+/// does not hold a `ws://` URL, two sidecars naming the endpoint, or a matching
+/// sidecar whose profile record is missing, corrupt or names another id.
+fn profile_id_for_endpoint_in(dir: &Path, endpoint: &str) -> Option<String> {
+    const ENDPOINT_PREFIX: &str = "relay-cdp-url-";
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return None;
+    }
+    let mut matched: Option<String> = None;
+    for entry in std::fs::read_dir(dir).ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            if name.to_string_lossy().starts_with(ENDPOINT_PREFIX) {
+                return None;
+            }
+            continue;
+        };
+        let Some(suffix) = name.strip_prefix(ENDPOINT_PREFIX) else {
+            continue;
+        };
+        let ws = std::fs::read_to_string(entry.path()).ok()?;
+        let ws = ws.trim();
+        if !ws.starts_with("ws://") {
+            return None;
+        }
+        if ws == endpoint && matched.replace(suffix.to_string()).is_some() {
+            return None;
+        }
+    }
+    let suffix = matched?;
+    let record = std::fs::read_to_string(dir.join(format!("relay-ext-profile-{suffix}"))).ok()?;
+    let (id, _) = parse_ext_profile(&record)?;
+    (sanitize_profile_id(&id) == suffix).then_some(id)
+}
+
 /// Resolve a `--browser` selector to a profile's relay ws URL. Matches a
 /// profileId (exact or prefix) or an email substring (case-insensitive).
 /// Returns `Err` with the available list when nothing/ambiguous matches.
@@ -3865,6 +3922,126 @@ mod tests {
             Some("last-hello".to_string())
         );
         assert_eq!(super::prefer_focused_profile(None, None), None);
+    }
+
+    fn write_sidecars(dir: &Path, id: &str, ws: &str) {
+        std::fs::write(dir.join(format!("relay-cdp-url-{id}")), ws).unwrap();
+        std::fs::write(
+            dir.join(format!("relay-ext-profile-{id}")),
+            json!({ "id": id, "email": null }).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn relay_endpoint_resolves_to_its_profile_only_when_unambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        // The generic pair is never consulted, even when it names the endpoint.
+        std::fs::write(d.join("relay-cdp-url"), "ws://127.0.0.1:4002/guid-b").unwrap();
+        std::fs::write(d.join("relay-ext-profile"), r#"{"id":"profile-a"}"#).unwrap();
+        write_sidecars(d, "profile-a", "ws://127.0.0.1:4001/guid-a");
+        write_sidecars(d, "profile-b", "ws://127.0.0.1:4002/guid-b");
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4002/guid-b"),
+            Some("profile-b".to_string())
+        );
+        // A restarted host's old endpoint, a launched browser, or nothing at
+        // all has no relay identity.
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/old-guid"),
+            None
+        );
+        assert_eq!(super::profile_id_for_endpoint_in(d, ""), None);
+        // A missing directory is not "no other claims".
+        assert_eq!(
+            super::profile_id_for_endpoint_in(&d.join("missing"), "ws://127.0.0.1:4002/guid-b"),
+            None
+        );
+    }
+
+    #[test]
+    fn relay_endpoint_claimed_twice_resolves_to_nobody() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        write_sidecars(d, "profile-a", "ws://127.0.0.1:4001/guid");
+        write_sidecars(d, "profile-b", "ws://127.0.0.1:4001/guid");
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_corrupt_profile_sidecar_does_not_let_the_other_claimant_win() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        write_sidecars(d, "profile-a", "ws://127.0.0.1:4001/guid");
+        // profile-b claims the same endpoint but its profile record is corrupt,
+        // so list_relay_profiles drops it; the lookup must still see the claim.
+        std::fs::write(
+            d.join("relay-cdp-url-profile-b"),
+            "ws://127.0.0.1:4001/guid",
+        )
+        .unwrap();
+        std::fs::write(d.join("relay-ext-profile-profile-b"), "{not json").unwrap();
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid"),
+            None
+        );
+        // Same with the profile record missing entirely.
+        std::fs::remove_file(d.join("relay-ext-profile-profile-b")).unwrap();
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unknown_endpoint_sidecar_or_profile_record_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        write_sidecars(d, "profile-a", "ws://127.0.0.1:4001/guid-a");
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid-a"),
+            Some("profile-a".to_string())
+        );
+        // Another endpoint sidecar is half-written or corrupt: it might name
+        // this endpoint, so nothing is known.
+        std::fs::write(d.join("relay-cdp-url-profile-b"), "").unwrap();
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid-a"),
+            None
+        );
+        std::fs::write(d.join("relay-cdp-url-profile-b"), "garbage").unwrap();
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid-a"),
+            None
+        );
+        // Unreadable (a directory in its place).
+        std::fs::remove_file(d.join("relay-cdp-url-profile-b")).unwrap();
+        std::fs::create_dir(d.join("relay-cdp-url-profile-b")).unwrap();
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid-a"),
+            None
+        );
+        std::fs::remove_dir(d.join("relay-cdp-url-profile-b")).unwrap();
+        // The matching sidecar's own profile record is corrupt, or names
+        // a different profile than its file name.
+        std::fs::write(d.join("relay-ext-profile-profile-a"), "{").unwrap();
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid-a"),
+            None
+        );
+        std::fs::write(
+            d.join("relay-ext-profile-profile-a"),
+            r#"{"id":"profile-z"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::profile_id_for_endpoint_in(d, "ws://127.0.0.1:4001/guid-a"),
+            None
+        );
     }
 
     #[test]

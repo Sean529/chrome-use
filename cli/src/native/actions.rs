@@ -2459,10 +2459,21 @@ async fn execute_command_inner(cmd: &Value, state: &mut DaemonState) -> Value {
             .is_some_and(|p| p.follow)
         {
             if let Some(pending) = state.deferred_click_tab_check.take() {
+                let target_of = |state: &DaemonState| {
+                    state
+                        .browser
+                        .as_ref()
+                        .and_then(|m| m.active_target_id().ok().map(ToString::to_string))
+                };
+                let before_check = target_of(state);
                 let extra = finish_click_tab_check(state, pending).await;
-                let followed = extra.get("followed").is_some();
+                // The arm watched the clicked tab. Drop it whenever the session
+                // is no longer on that tab — after a follow, and after a failed
+                // follow that could not return — so the settle never describes
+                // one tab with signals from another.
+                let moved = target_of(state) != before_check;
                 merge_into_data(&mut resp, extra);
-                if followed {
+                if moved {
                     if let Some(a) = arm.take() {
                         super::settle::release_arm(state, &a).await;
                     }
@@ -7196,6 +7207,9 @@ async fn handle_click(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
     // (issue #24-A).
     let before: std::collections::HashSet<String> =
         mgr.pages_list().into_iter().map(|p| p.target_id).collect();
+    // Over the relay a pop-up from our tab is found in chrome.tabs, so record
+    // which Chrome tabs exist before the click (#456).
+    let relay_before = mgr.relay_tab_baseline().await;
 
     let dialog_events = mgr.client.subscribe();
     let mut outcome: Option<interaction::ClickOutcome> = None;
@@ -7241,6 +7255,7 @@ async fn handle_click(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
     }
     let pending = DeferredClickTabCheck {
         before,
+        relay_before,
         follow,
         clicked_at: std::time::Instant::now(),
     };
@@ -7260,6 +7275,8 @@ async fn handle_click(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
 pub(crate) struct DeferredClickTabCheck {
     /// Targets that existed before the click.
     before: std::collections::HashSet<String>,
+    /// Over the relay, the Chrome tabs that existed before the click.
+    relay_before: Option<super::browser::RelayTabBaseline>,
     /// `--follow`: switch to the opened tab.
     follow: bool,
     /// When the click was delivered: the check waits until
@@ -7283,7 +7300,16 @@ async fn finish_click_tab_check(state: &mut DaemonState, pending: DeferredClickT
     let Some(mgr) = state.browser.as_mut() else {
         return out;
     };
-    let opened = mgr.adopt_newly_opened(&pending.before).await;
+    let check = mgr
+        .adopt_newly_opened(&pending.before, pending.relay_before.as_ref())
+        .await;
+    if let Some(w) = check.warning {
+        out["openedTabWarning"] = json!(w);
+    }
+    if let Some(status) = check.status {
+        out["openedTabStatus"] = json!(status);
+    }
+    let opened = check.opened;
     // A popup the page opened is ours (adopt_newly_opened only returns tabs
     // it can attribute to this session), but its first document loaded before
     // we could attach. Replay the session's setup anyway so its overrides hold
@@ -7307,15 +7333,54 @@ async fn finish_click_tab_check(state: &mut DaemonState, pending: DeferredClickT
         if pending.follow {
             let old_target = mgr.active_target_id().ok().map(ToString::to_string);
             let new_target = mgr.target_id_for_tab(page.tab_id).map(ToString::to_string);
-            let _ = mgr.tab_switch_by_id(page.tab_id).await;
-            if let Some(ref new_t) = new_target {
-                state.switch_tab_context(old_target.as_deref(), new_t);
-            } else {
-                state.ref_map.clear();
-                state.iframe_sessions.clear();
-                state.active_frame_id = None;
+            // Report `followed` only when the session really is on the new tab:
+            // a pop-up can be gone again (or replaced) before the switch, and a
+            // `followed: true` beside a settle and snapshot of the old tab is a
+            // silent success.
+            match mgr.follow_tab(page.tab_id).await {
+                Ok(_) => {
+                    if let Some(ref new_t) = new_target {
+                        state.switch_tab_context(old_target.as_deref(), new_t);
+                    } else {
+                        state.ref_map.clear();
+                        state.iframe_sessions.clear();
+                        state.active_frame_id = None;
+                    }
+                    out["followed"] = json!(true);
+                }
+                Err(e) => {
+                    // `follow_tab` pins the session back on failure. Say where
+                    // it actually is, read from the manager rather than assumed,
+                    // and move the ref context there if it is somewhere else.
+                    let now = mgr.active_target_id().ok().map(ToString::to_string);
+                    let now_tab = mgr
+                        .pages_list()
+                        .into_iter()
+                        .find(|p| Some(&p.target_id) == now.as_ref())
+                        .map(|p| super::browser::format_tab_id(p.tab_id));
+                    out["followed"] = json!(false);
+                    if now.is_some() && now == old_target {
+                        out["openedTabWarning"] = json!(format!(
+                            "--follow could not switch to {tab_id} ({e}); the session is still \
+                             on the tab that was clicked. Run `tab list`."
+                        ));
+                    } else {
+                        match now.as_deref() {
+                            Some(now_t) => state.switch_tab_context(old_target.as_deref(), now_t),
+                            None => {
+                                state.ref_map.clear();
+                                state.iframe_sessions.clear();
+                                state.active_frame_id = None;
+                            }
+                        }
+                        out["openedTabWarning"] = json!(format!(
+                            "--follow could not switch to {tab_id} ({e}), and the session could \
+                             not return to the clicked tab: it is now on {}. Run `tab list`.",
+                            now_tab.as_deref().unwrap_or("no tab")
+                        ));
+                    }
+                }
             }
-            out["followed"] = json!(true);
         }
     }
     out

@@ -553,6 +553,11 @@ fn print_response_body(resp: &Response, action: Option<&str>, opts: &OutputOptio
                 color::dim(url)
             );
         }
+        // A tab the click opened but could not adopt (relay, #456): say so
+        // rather than let the unchanged page read as a click that did nothing.
+        if let Some(w) = data.get("openedTabWarning").and_then(|v| v.as_str()) {
+            eprintln!("{} {}", color::yellow("⚠"), w);
+        }
 
         // `current`: the active tab's stable handle (#26).
         if data
@@ -2539,6 +2544,18 @@ Options:
   --new-tab            Open link in a new tab instead of navigating current tab.
                        The new tab inherits session setup before its first load.
                        Only works on elements with an href attribute.
+  --follow             Move to a tab the click opened (target=_blank,
+                       window.open). Without it the tab is still reported as
+                       openedTab and joins the session (tab list, tab close,
+                       close). With --observe, settle and snapshot then describe
+                       the new tab. A failed switch reports followed: false and
+                       the session stays on the clicked tab.
+
+In your own Chrome (extension relay) only a tab opened by one of the session's
+tabs is taken, attached by its Chrome tab id (ab-connect 0.5.30+). A tab seen
+but not taken sets openedTabWarning and openedTabStatus: `unadopted` (left
+alone on purpose) or `unknown` (no answer within about 2 s to find plus 3 s to
+attach; it may be attached but is not tracked).
 
 Global Options:
   --json               Output as JSON
@@ -2546,6 +2563,7 @@ Global Options:
 
 Examples:
   chrome-use click "#submit-button"
+  chrome-use click @e2 --observe --follow
   chrome-use click @e1
   chrome-use click "button.primary"
   chrome-use click "//button[@type='submit']"

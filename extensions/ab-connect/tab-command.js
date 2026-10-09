@@ -87,7 +87,7 @@ export async function sendTabCommand(tabId, method, params, childSessionId, deps
       deps.sendCommand(dbg, method, params),
       `chrome.debugger.sendCommand(${method})`,
       deps.commandTimeoutMs ?? relayCommandBudgetMs(method, params),
-      { payloadScaled: relayCommandBudgetMs(method, params) !== RELAY_COMMAND_TIMEOUT_MS },
+      { payloadScaled: method === 'Input.insertText' && relayCommandBudgetMs(method, params) !== RELAY_COMMAND_TIMEOUT_MS },
     )
   } catch (e) {
     if (isRelayTimeoutError(e)) {
@@ -112,7 +112,7 @@ export async function sendTabCommand(tabId, method, params, childSessionId, deps
         deps.sendCommand({ tabId: recoveredTabId }, method, params),
         `chrome.debugger.sendCommand(${method}) retry`,
         deps.commandTimeoutMs ?? relayCommandBudgetMs(method, params),
-        { payloadScaled: relayCommandBudgetMs(method, params) !== RELAY_COMMAND_TIMEOUT_MS },
+        { payloadScaled: method === 'Input.insertText' && relayCommandBudgetMs(method, params) !== RELAY_COMMAND_TIMEOUT_MS },
       )
     } catch (retryError) {
       if (isRelayTimeoutError(retryError)) deps.health?.mark(recoveredTabId)

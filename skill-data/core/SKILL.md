@@ -154,7 +154,7 @@ Run `chrome-use skills get <name>` with one name below.
 | Scoped reads, frames, shadow roots, screenshots | `core/reading` |
 | Mid-transition reads, `wait`, observation limits | `core/waiting` |
 | Ref identity, context annotations, snapshot detail | `core/snapshot-refs` |
-| `status`, extension setup, browser/profile choice, relay denial | `core/connection` |
+| `status`/`doctor`: one 10-second diagnostic connection, passive worker-local debugger counts (“in the last 10 min” for a full window; otherwise since worker start, whole seconds below 120 s and whole minutes thereafter), possible duplicate extensions, version skew, load, browser/profile choice | `core/connection` |
 | Several Chrome profiles/accounts: which to use, connecting one | `core/connection` (Choosing a profile) |
 | Site adapter arguments, installation, sources | `core/site-adapters` |
 | Login, cookies, vault, passkeys, OAuth, handoff | `core/authentication` |

@@ -150,3 +150,68 @@ test('protected content in a top-level tab does not trigger futile reattachment'
   assert.deepEqual(f.detached, [])
   assert.deepEqual(f.recovered, [])
 })
+
+async function recoveryFixture() {
+  const { createAttachmentHealth } = await import('./tab-command.js')
+  const calls = []
+  let hung = true
+  const deps = {
+    health: createAttachmentHealth(), commandTimeoutMs: 5, recoveryTimeoutMs: 15,
+    sendCommand(target, method) {
+      calls.push(['send', target.tabId, method])
+      return hung && target.tabId === 1 ? new Promise(() => {}) : Promise.resolve({ ok: true })
+    },
+    async detachDebugger(id) { calls.push(['detach', id]); hung = false },
+    detachTab(id) { calls.push(['forget', id]) },
+    async attachTab(id) { calls.push(['attach', id]) },
+  }
+  return { calls, deps }
+}
+
+test('hung tab A does not block B; next concurrent reads share acknowledged recovery', async () => {
+  const { calls, deps } = await recoveryFixture()
+  const timeout = assert.rejects(sendTabCommand(1, 'Page.enable', {}, undefined, deps), /relay timeout/)
+  assert.deepEqual(await sendTabCommand(2, 'Page.enable', {}, undefined, deps), { ok: true })
+  await timeout
+  await Promise.all([1, 2].map(() => sendTabCommand(1, 'DOM.getDocument', {}, undefined, deps)))
+  assert.equal(calls.filter(c => c[0] === 'detach').length, 1)
+  assert.equal(calls.filter(c => c[0] === 'attach').length, 1)
+  assert.ok(calls.findIndex(c => c[0] === 'detach') < calls.findIndex(c => c[0] === 'attach'))
+})
+
+test('timed-out side effect is not replayed and next action runs once after recovery', async () => {
+  const { calls, deps } = await recoveryFixture()
+  await assert.rejects(sendTabCommand(1, 'Runtime.evaluate', {}, undefined, deps), /relay timeout/)
+  assert.equal(calls.length, 1)
+  await sendTabCommand(1, 'Input.dispatchMouseEvent', {}, undefined, deps)
+  assert.equal(calls.filter(c => c[2] === 'Runtime.evaluate').length, 1)
+  assert.equal(calls.filter(c => c[2] === 'Input.dispatchMouseEvent').length, 1)
+})
+
+test('recovery deadline reports an unconfirmed tab reset without dispatch', async () => {
+  const { calls, deps } = await recoveryFixture()
+  await assert.rejects(sendTabCommand(1, 'Page.enable', {}, undefined, deps), /relay timeout/)
+  deps.detachDebugger = () => new Promise(() => {})
+  await assert.rejects(sendTabCommand(1, 'DOM.getDocument', {}, undefined, deps), /tab_reset_failed: tab 1 was reset; debugger recovery could not be confirmed/)
+  assert.equal(calls.length, 1)
+})
+
+test('child timeout invalidates parent and stale child is never replayed', async () => {
+  const { calls, deps } = await recoveryFixture()
+  await assert.rejects(sendTabCommand(1, 'Accessibility.getFullAXTree', {}, 'child', deps), /relay timeout/)
+  await assert.rejects(sendTabCommand(1, 'Accessibility.getFullAXTree', {}, 'child', deps), /tab_reset: child session invalidated/)
+  assert.equal(calls.filter(c => c[0] === 'send').length, 1)
+  await sendTabCommand(1, 'Page.enable', {}, undefined, deps)
+})
+
+test('late detach acknowledgement after recovery deadline cannot reattach or dispatch', async () => {
+  const { calls, deps } = await recoveryFixture()
+  let finish
+  deps.detachDebugger = () => new Promise(resolve => { finish = resolve })
+  deps.health.mark(1)
+  await assert.rejects(sendTabCommand(1, 'Page.enable', {}, undefined, deps), /tab_reset_failed/)
+  finish()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await assert.rejects(sendTabCommand(1, 'Page.enable', {}, undefined, deps), /tab_reset_failed/)
+  assert.deepEqual(calls, [])
+})

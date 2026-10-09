@@ -1,4 +1,4 @@
-import { RELAY_COMMAND_TIMEOUT_MS, relayCommandBudgetMs, withRelayTimeout } from './relay-timeout.js'
+import { RELAY_COMMAND_TIMEOUT_MS, isRelayTimeoutError, relayCommandBudgetMs, withRelayTimeout } from './relay-timeout.js'
 import { isDebuggerAccessDenied, debuggerAccessError } from './debugger-access.js'
 
 // Reads and domain subscriptions can be repeated after a transport failure.
@@ -14,21 +14,66 @@ function unconfirmedActionError(method, error) {
   )
 }
 
+// Kept per relay (and injectable in tests), never a global cross-tab queue.
+export function createAttachmentHealth() {
+  const unhealthy = new Set()
+  const recovering = new Map()
+  const failed = new Map()
+  return {
+    mark(tabId) { unhealthy.add(tabId) },
+    isRecovering(tabId) { return recovering.has(tabId) || failed.has(tabId) },
+    async recover(tabId, deps) {
+      if (failed.has(tabId)) throw failed.get(tabId)
+      if (!unhealthy.has(tabId)) return false
+      if (!recovering.has(tabId)) {
+        let active = true
+        const operation = (async () => {
+          await deps.detachDebugger(tabId)
+          if (!active) throw new Error('recovery expired')
+          deps.detachTab(tabId, false)
+          await deps.attachTab(tabId, () => active)
+          if (!active) throw new Error('recovery expired')
+        })()
+        const recovery = withRelayTimeout(operation, `debugger recovery for tab ${tabId}`,
+          deps.recoveryTimeoutMs ?? RELAY_COMMAND_TIMEOUT_MS).then(() => {
+            unhealthy.delete(tabId)
+          }).catch(error => {
+            const failure = new Error(`tab_reset_failed: tab ${tabId} was reset; debugger recovery could not be confirmed. ` +
+              `Reopen the tab before retrying. ${error.message}`)
+            failed.set(tabId, failure)
+            throw failure
+          }).finally(() => { active = false; recovering.delete(tabId) })
+        recovering.set(tabId, recovery)
+      }
+      await recovering.get(tabId)
+      return true
+    },
+  }
+}
+
 /**
  * Dispatch to one debugger target. A child-frame failure must not tear down its
  * parent: a restricted OOPIF can fail while the top-level page is healthy, and
  * child session ids cannot be reused after a parent reattachment.
  */
 export async function sendTabCommand(tabId, method, params, childSessionId, deps) {
+  const reset = await deps.health?.recover(tabId, deps)
+  if (reset && childSessionId) {
+    throw new Error('tab_reset: child session invalidated; rediscover frames before retrying')
+  }
   const dbg = childSessionId ? { tabId, sessionId: childSessionId } : { tabId }
   try {
     return await withRelayTimeout(
       deps.sendCommand(dbg, method, params),
       `chrome.debugger.sendCommand(${method})`,
-      relayCommandBudgetMs(method, params),
+      deps.commandTimeoutMs ?? relayCommandBudgetMs(method, params),
       { payloadScaled: relayCommandBudgetMs(method, params) !== RELAY_COMMAND_TIMEOUT_MS },
     )
   } catch (e) {
+    if (isRelayTimeoutError(e)) {
+      deps.health?.mark(tabId)
+      throw e
+    }
     if (isDebuggerAccessDenied(e)) throw debuggerAccessError(e)
     if (childSessionId) throw e
     const msg = String((e && e.message) || e)
@@ -46,10 +91,11 @@ export async function sendTabCommand(tabId, method, params, childSessionId, deps
       return await withRelayTimeout(
         deps.sendCommand({ tabId: recoveredTabId }, method, params),
         `chrome.debugger.sendCommand(${method}) retry`,
-        relayCommandBudgetMs(method, params),
+        deps.commandTimeoutMs ?? relayCommandBudgetMs(method, params),
         { payloadScaled: relayCommandBudgetMs(method, params) !== RELAY_COMMAND_TIMEOUT_MS },
       )
     } catch (retryError) {
+      if (isRelayTimeoutError(retryError)) deps.health?.mark(recoveredTabId)
       // The initial attempt may have been rejected before dispatch, but the
       // attempt after reattachment can execute before losing its response.
       if (!REPEATABLE_COMMAND.test(method)) throw unconfirmedActionError(method, retryError)

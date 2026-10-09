@@ -172,3 +172,20 @@ test('a scaled-budget timeout does not blame an unresponsive debugger', async ()
     },
   )
 })
+
+test('underlying operations remain counted after wrapper expiry until they settle', async () => {
+  const { relayUnresolvedOperations } = await import('./relay-timeout.js')
+  const before = relayUnresolvedOperations().count
+  let finish
+  const underlying = new Promise(resolve => { finish = resolve })
+  await assert.rejects(withRelayTimeout(underlying, 'pending operation', 5), error => {
+    assert.match(error.message, /\[diag in-flight=1 oldest-in-flight=\d+ms worker-age=\d+ms\]/)
+    return true
+  })
+  assert.equal(relayInFlightCount(), 0)
+  assert.equal(relayUnresolvedOperations().count, before + 1)
+  assert.ok(relayUnresolvedOperations(Date.now() + 100).oldestAgeMs >= 100)
+  finish()
+  await Promise.resolve()
+  assert.equal(relayUnresolvedOperations().count, before)
+})

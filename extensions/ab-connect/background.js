@@ -16,6 +16,8 @@
 // attach + Target handling; the transport is rewritten from WebSocket+token to
 // native messaging.
 
+import { getRelayHealth, observeDebuggerCommand } from './relay-health.js';
+import { extensionInstallIdentity } from './relay-identity.js';
 import { duplicateTab as runDuplicateTab } from './tab-duplicate.js';
 import {
   agentTabPredicate,
@@ -440,7 +442,7 @@ async function tabScopeHints(tabId) {
 // needed. `profileEmail` is included only when the optional `identity` permission
 // is present and the profile is signed in; otherwise it's omitted (never throws).
 async function buildHelloIdentity() {
-  const extra = {};
+  const extra = await extensionInstallIdentity(chrome);
   try {
     const KEY = 'ab_profile_id';
     const got = await chrome.storage.local.get(KEY);
@@ -870,8 +872,11 @@ async function recoverSessionTab(sessionId) {
 // as caller commands when their renderer stops answering.
 async function trackedDebuggerCommand(target, method, params) {
   try {
-    return await withRelayTimeout(chrome.debugger.sendCommand(target, method, params),
-      `chrome.debugger.sendCommand(${method})`);
+    return await observeDebuggerCommand(
+      method,
+      withRelayTimeout(chrome.debugger.sendCommand(target, method, params),
+        `chrome.debugger.sendCommand(${method})`),
+    );
   } catch (error) {
     if (isRelayTimeoutError(error)) attachmentHealth.mark(target.tabId);
     throw error;
@@ -898,7 +903,10 @@ function tabCommandDependencies() {
 }
 
 async function sendCdpToTab(tabId, method, params, childSessionId) {
-  return await sendTabCommand(tabId, method, params, childSessionId, tabCommandDependencies());
+  return await observeDebuggerCommand(
+    method,
+    sendTabCommand(tabId, method, params, childSessionId, tabCommandDependencies()),
+  );
 }
 
 function anyConnectedTab() {
@@ -1095,6 +1103,7 @@ async function handleForwardCdpCommand(msg) {
     const { tabId, tab } = resolved;
     const entry = tabs.get(tabId);
     return {
+      relayHealth: getRelayHealth(),
       chromeTabId: tabId,
       sessionId: requestedSession || entry?.sessionId || null,
       targetId: entry?.targetId || requestedTarget || null,
@@ -1195,6 +1204,7 @@ async function handleForwardCdpCommand(msg) {
     await loadOwnedTabs();
     return {
       version: chrome.runtime.getManifest().version,
+      relayHealth: getRelayHealth(),
       policy: policySummary(),
       connected: port != null,
       attachedTargets: attachedTargetsFrom(tabs.entries()),

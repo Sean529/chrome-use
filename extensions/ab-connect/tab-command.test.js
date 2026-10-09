@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import vm from 'node:vm'
 
 import { sendTabCommand } from './tab-command.js'
 
@@ -215,3 +217,126 @@ test('late detach acknowledgement after recovery deadline cannot reattach or dis
   await assert.rejects(sendTabCommand(1, 'Page.enable', {}, undefined, deps), /tab_reset_failed/)
   assert.deepEqual(calls, [])
 })
+
+for (const message of ['Debugger is not attached to the tab with id: 1.', 'Debugger is not attached to tab 1.']) {
+  test(`already detached recovery dispatches: ${message}`, async () => {
+    const { calls, deps } = await recoveryFixture()
+    await assert.rejects(sendTabCommand(1, 'Page.enable', {}, undefined, deps), /relay timeout/)
+    const detach = deps.detachDebugger
+    deps.detachDebugger = async id => { await detach(id); throw new Error(message) }
+    assert.deepEqual(await sendTabCommand(1, 'Page.enable', {}, undefined, deps), { ok: true })
+    assert.deepEqual(calls.map(c => c[0]), ['send', 'detach', 'forget', 'attach', 'send'])
+    assert.equal(deps.health.isRecovering(1), false)
+  })
+}
+
+for (const message of ['Permission denied', 'debugger recovery refused: tab is no longer authorized', 'Target closed']) {
+  test(`other detach errors fail recovery: ${message}`, async () => {
+    const { calls, deps } = await recoveryFixture()
+    deps.health.mark(1)
+    deps.detachDebugger = async () => { throw new Error(message) }
+    await assert.rejects(sendTabCommand(1, 'Page.enable', {}, undefined, deps), /tab_reset_failed/)
+    assert.equal(deps.health.isRecovering(1), false)
+    await assert.rejects(deps.health.recover(1, deps), /tab_reset_failed/)
+    assert.deepEqual(calls, [])
+    deps.health.clear(1)
+    assert.equal(await deps.health.recover(1, deps), false)
+  })
+}
+
+test('clearing an unhealthy tab avoids recovery', async () => {
+  const { calls, deps } = await recoveryFixture()
+  deps.health.mark(1)
+  deps.health.clear(1)
+  assert.equal(await deps.health.recover(1, deps), false)
+  assert.deepEqual(calls, [])
+})
+
+for (const stage of ['detach', 'attach']) {
+  for (const rejects of [false, true]) {
+    test(`removal invalidates late ${stage} ${rejects ? 'failure' : 'success'}`, async () => {
+      const { deps } = await recoveryFixture()
+      let finish, isActive
+      deps[stage === 'detach' ? 'detachDebugger' : 'attachTab'] = (_id, active) => {
+        isActive = active
+        return new Promise((resolve, reject) => { finish = () => rejects ? reject(new Error('tab gone')) : resolve() })
+      }
+      deps.health.mark(1)
+      const pending = assert.rejects(deps.health.recover(1, deps), /tab_reset_failed/)
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(deps.health.isRecovering(1), true)
+      deps.health.clear(1)
+      if (isActive) assert.equal(isActive(), false)
+      finish()
+      await pending
+      assert.equal(deps.health.isRecovering(1), false)
+      assert.equal(await deps.health.recover(1, deps), false)
+    })
+  }
+}
+
+// Exercise the actual background handlers without starting Chrome or the worker.
+async function backgroundCleanupFixture() {
+  const { createAttachmentHealth } = await import('./tab-command.js')
+  const source = readFileSync(new URL('./background.js', import.meta.url), 'utf8')
+  const listeners = {}, events = []
+  let pending
+  const context = {
+    attachmentHealth: createAttachmentHealth(),
+    tabs: new Map([[1, { sessionId: 'cb-tab-1', attached: true }]]),
+    sessionToTab: new Map([['cb-tab-1', 1]]),
+    childSessionToTab: new Map([['child', 1]]),
+    forgetSessionTab(map, id) { for (const [sid, tid] of map) if (tid === id) map.delete(sid) },
+    postToHost(event) { events.push(event) },
+    whenReady(fn) { pending = Promise.resolve().then(fn); return pending },
+    chrome: {
+      debugger: { onDetach: { addListener(fn) { listeners.detach = fn } } },
+      tabs: { onRemoved: { addListener(fn) { listeners.remove = fn } } },
+    },
+    nativeDuplicateTabs: new Set(), forgetAgentPopup() {},
+    reloadStates: new Map(), sessionTargets: new Map(),
+    ownedTabs: new Set(), unmarkOwned() {},
+    setTimeout() {}, RELOAD_LOOP_WINDOW_MS: 1000,
+    port: null,
+  }
+  vm.createContext(context)
+  for (const [start, end] of [
+    ['function detachTab(', 'function eligible('],
+    ['chrome.debugger.onDetach.addListener(', '// ---- tab lifecycle'],
+    ['chrome.tabs.onRemoved.addListener(', '// `tabs.onUpdated`'],
+  ]) vm.runInContext(source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))), context)
+  return { context, events, async emit(name, ...args) { listeners[name](...args); await pending } }
+}
+
+test('failed recovery does not suppress actual detach cleanup and daemon notification', async () => {
+  const { context: c, events, emit } = await backgroundCleanupFixture()
+  c.attachmentHealth.mark(1)
+  await assert.rejects(c.attachmentHealth.recover(1, {
+    detachDebugger: async () => { throw new Error('Permission denied') },
+  }), /tab_reset_failed/)
+  await emit('detach', { tabId: 1 }, 'replaced_with_devtools')
+  assert.equal(c.tabs.size, 0)
+  assert.equal(c.sessionToTab.size, 0)
+  assert.equal(c.childSessionToTab.size, 0)
+  assert.equal(events[0].params.method, 'Target.detachedFromTarget')
+  assert.equal(await c.attachmentHealth.recover(1, {}), false)
+})
+
+for (const state of ['unhealthy', 'failed', 'pending']) {
+  test(`actual tab removal clears ${state} health even without an attachment record`, async () => {
+    const { context: c, emit } = await backgroundCleanupFixture()
+    c.tabs.delete(1)
+    c.attachmentHealth.mark(1)
+    let finish, pending
+    if (state === 'failed') await assert.rejects(c.attachmentHealth.recover(1, {
+      detachDebugger: async () => { throw new Error('Permission denied') },
+    }), /tab_reset_failed/)
+    if (state === 'pending') pending = assert.rejects(c.attachmentHealth.recover(1, {
+      detachDebugger: () => new Promise(resolve => { finish = resolve }),
+    }), /tab_reset_failed/)
+    await emit('remove', 1)
+    if (finish) { finish(); await pending }
+    assert.equal(c.attachmentHealth.isRecovering(1), false)
+    assert.equal(await c.attachmentHealth.recover(1, {}), false)
+  })
+}

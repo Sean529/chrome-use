@@ -1595,7 +1595,9 @@ function sweepIdleTabs() {
   }
 }
 
-function detachTab(tabId, notify) {
+function detachTab(tabId, notify, preserveRecovery = false) {
+  // Only the recovery's own intermediate reset may retain its health token.
+  if (!preserveRecovery) attachmentHealth.clear(tabId);
   const entry = tabs.get(tabId);
   if (!entry) return;
   tabs.delete(tabId);

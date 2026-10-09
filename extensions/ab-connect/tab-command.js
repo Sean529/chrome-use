@@ -21,31 +21,51 @@ export function createAttachmentHealth() {
   const failed = new Map()
   return {
     mark(tabId) { unhealthy.add(tabId) },
-    isRecovering(tabId) { return recovering.has(tabId) || failed.has(tabId) },
+    isRecovering(tabId) { return recovering.has(tabId) },
+    // Dropping an attachment also invalidates pending work for that attachment.
+    clear(tabId) {
+      unhealthy.delete(tabId)
+      failed.delete(tabId)
+      const token = recovering.get(tabId)
+      if (token) token.active = false
+      recovering.delete(tabId)
+    },
     async recover(tabId, deps) {
       if (failed.has(tabId)) throw failed.get(tabId)
       if (!unhealthy.has(tabId)) return false
       if (!recovering.has(tabId)) {
-        let active = true
+        const token = { active: true, promise: null }
+        const isCurrent = () => token.active && recovering.get(tabId) === token
         const operation = (async () => {
-          await deps.detachDebugger(tabId)
-          if (!active) throw new Error('recovery expired')
-          deps.detachTab(tabId, false)
-          await deps.attachTab(tabId, () => active)
-          if (!active) throw new Error('recovery expired')
+          try {
+            await deps.detachDebugger(tabId)
+          } catch (error) {
+            // Only Chrome's explicit absent-attachment error confirms this step.
+            if (!/^Debugger is not attached to (?:the )?tab\b/i.test(String(error?.message || error))) throw error
+          }
+          if (!isCurrent()) throw new Error('recovery expired')
+          // The reset drops session maps but keeps this recovery token alive.
+          deps.detachTab(tabId, false, true)
+          await deps.attachTab(tabId, isCurrent)
+          if (!isCurrent()) throw new Error('recovery expired')
         })()
         const recovery = withRelayTimeout(operation, `debugger recovery for tab ${tabId}`,
           deps.recoveryTimeoutMs ?? RELAY_COMMAND_TIMEOUT_MS).then(() => {
+            if (!isCurrent()) throw new Error('recovery expired')
             unhealthy.delete(tabId)
           }).catch(error => {
             const failure = new Error(`tab_reset_failed: tab ${tabId} was reset; debugger recovery could not be confirmed. ` +
               `Reopen the tab before retrying. ${error.message}`)
-            failed.set(tabId, failure)
+            if (isCurrent()) failed.set(tabId, failure)
             throw failure
-          }).finally(() => { active = false; recovering.delete(tabId) })
-        recovering.set(tabId, recovery)
+          }).finally(() => {
+            token.active = false
+            if (recovering.get(tabId) === token) recovering.delete(tabId)
+          })
+        token.promise = recovery
+        recovering.set(tabId, token)
       }
-      await recovering.get(tabId)
+      await recovering.get(tabId).promise
       return true
     },
   }

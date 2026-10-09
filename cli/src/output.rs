@@ -4317,6 +4317,10 @@ Bitwarden Login Options:
   In --launch mode, password login can also answer a passkey second factor.
   Unexpected registration or unconfirmed authenticator cleanup aborts the command.
   A signed assertion is not proof of login; verify the authenticated destination.
+  A password login succeeds only once the sign-in form is gone from the page
+  (signedIn + evidence); a form still there ~12s after the submit fails with
+  "the sign-in was not confirmed". An Enter that never reached the page is
+  replaced by a click on the form's sign-in button (submittedWith says so).
   Login walls: a navigation that lands on a sign-in page, or a site adapter
   that finds the site signed out, prints `login wall: …` (JSON: loginWall).
   When the user has not decided for that site, it asks: a prompt in a
@@ -4814,6 +4818,21 @@ Runs a battery of checks across environment, Chrome install, daemon state,
 config files, encryption key, providers, network reachability, and a live
 check: with the extension relay up it probes the relay and launches nothing;
 otherwise it runs a headless browser launch test (no window).
+Relay health uses one diagnostic connection with a total 10-second budget.
+It reads extension state, falling back to inspectTab on the same connection after
+an error. No debugger commands are sent. Passive debugger answered/timeout counts
+cover up to ten minutes of the current worker (one-second buckets), reset on
+worker restart, and report "not exercised" when empty. Missing health is INFO.
+A full window says "in the last 10 min"; otherwise "since the extension worker
+started <age> ago", using whole seconds below 120 s (45s), then whole minutes (3 min).
+New hosts skip attachAll; older running hosts trigger their usual attachAll once
+and a notice to reload the extension after upgrading to start the new host.
+Possible duplicates use sidecar identities and concurrent TCP-only liveness;
+matching account/browser with different extension ids does not prove one profile.
+Only disable one if both are installed in the same Chrome profile.
+Update older published extensions; for a newer live extension run chrome-use upgrade.
+On macOS/Linux, shows one-minute system load and CPU count; above twice the CPU
+count warns and adds load hints to relay/CDP timeout errors.
 
 Auto-cleans stale daemon socket/pid/version sidecar files. Destructive
 repairs (reinstalling Chrome, purging old state files, generating a missing
@@ -5041,10 +5060,27 @@ Reports the installed CLI version, native host and extension relay state,
 live versus bundled extension version, driving Chrome profile, current session,
 and all running session daemons. Because this command is daemon-free, use it as
 the first check when browser commands are hanging.
-Relay health requires an extension reply within 10 seconds, not merely a saved
-endpoint file. A down result also hides cached profile/version information.
-This browser-level check does not prove that a page renderer is responsive.
-Extensions predating inspectTab cannot confirm health; update them if this check fails.
+Relay health uses one diagnostic connection and a total 10-second budget, reading
+state then falling back to inspectTab on that connection only after an error.
+No debugger commands are sent. Passive debugger answered/timeout counts cover the
+last ten minutes or worker age if shorter (one-second buckets); restarting the
+worker resets them. No samples means not exercised; missing health data is INFO.
+A full window says "in the last 10 min"; otherwise "since the extension worker
+started <age> ago", using whole seconds below 120 s (45s), then whole minutes (3 min).
+Timeouts warn: if commands keep failing, reload the chrome-use extension at
+chrome://extensions or restart Chrome. Old running hosts perform their usual
+attachAll once; reload the extension after upgrading to start the new host.
+Possible duplicates use sidecar identities and concurrent TCP-only liveness checks
+(up to one second), not WebSocket handshakes. Same account/browser with different
+extension ids does not prove one profile; disable one only if both share a profile.
+Update an older published extension; newer live extensions need chrome-use upgrade.
+Only installType development identifies a development build. Doctor shows system
+load and CPU count; high load also adds hints to relay/CDP timeout errors.
+JSON health: transportResponsive, hostDiagnostic, debugger, extensionHealth.
+connectedProfiles and warnings remain available. status relayUp means transport
+answered; extension status relayUp retains endpoint-presence semantics.
+A down status hides cached profile/version information. Transport health alone
+does not prove that a page renderer responds.
 
 If a browser command reports that a session endpoint disappeared, rerun the
 command. chrome-use clears the unreachable worker and recreates the endpoint.

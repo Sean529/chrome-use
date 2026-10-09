@@ -78,6 +78,7 @@ const workerStartedAt = Date.now()
 // an `oldest` far past the budget, where a genuinely blocked renderer times out
 // alone (#193).
 const inFlight = new Map()
+const unresolved = new Map()
 let nextCommandId = 1
 
 const recordedTimeouts = []
@@ -97,6 +98,12 @@ export function relayInFlightCount() {
   return inFlight.size
 }
 
+export function relayUnresolvedOperations(now = Date.now()) {
+  let oldest = now
+  for (const entry of unresolved.values()) oldest = Math.min(oldest, entry.startedAt)
+  return { count: unresolved.size, oldestAgeMs: Math.max(0, now - oldest) }
+}
+
 function describeContext(id, now) {
   let oldestStartedAt = now
   for (const entry of inFlight.values()) {
@@ -104,6 +111,7 @@ function describeContext(id, now) {
   }
   const self = inFlight.get(id)
   return {
+    unresolvedOperations: relayUnresolvedOperations(now),
     elapsedMs: now - (self ? self.startedAt : now),
     inFlight: inFlight.size,
     oldestInFlightMs: now - oldestStartedAt,
@@ -119,10 +127,15 @@ export async function withRelayTimeout(
 ) {
   const id = nextCommandId++
   inFlight.set(id, { label, startedAt: Date.now() })
+  unresolved.set(id, { label, startedAt: Date.now() })
+  const underlying = Promise.resolve(operation).then(
+    value => { unresolved.delete(id); return value },
+    error => { unresolved.delete(id); throw error },
+  )
   let timer
   try {
     return await Promise.race([
-      Promise.resolve(operation),
+      underlying,
       new Promise((_, reject) => {
         timer = setTimeout(
           () => {

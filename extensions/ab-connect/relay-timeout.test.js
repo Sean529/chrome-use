@@ -47,6 +47,8 @@ test('an input timeout is not payload-scaled or replayed', async (t) => {
     assert.doesNotMatch(error.message, /scaled with the payload|insert was NOT cancelled/)
     return true
   })
+  // Let any awaited pre-dispatch step (e.g. tab recovery) register the timer first.
+  await new Promise((resolve) => setImmediate(resolve))
   t.mock.timers.tick(25000)
   await rejected
   assert.equal(dispatches, 1)

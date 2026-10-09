@@ -3,14 +3,16 @@
 ## 1.5.179
 
 <!-- release:start -->
-Extension ab-connect 0.5.31 is needed only for the opt-in background links below; everything else works with 0.5.30.
+Requires extension ab-connect 0.5.31 (published on the Chrome Web Store; Chrome updates it automatically). Only the opt-in background links below depend on it.
 
 ### Bug Fixes
 
 - **A site adapter whose site is signed out is a login wall.** An adapter can now say "not signed in" in one documented way, `loginRequired: true` (optionally with `loginUrl`, the sign-in page); `error: "login_required"` / `"not_logged_in"` mean the same. A run that fails after one of its `fetch` calls got HTTP 401 or was redirected to a sign-in page, or that left the tab on one, counts too. The command then fails with `login wall: <host> is not signed in …` on stderr and `loginWall` in `--json`, pointing at `auth login --bwu` instead of "log in in Chrome first", and a write that the site refused for want of a login is no longer reported as a failed write. With `"auth": {"autoLogin": "bwu"}` (or `AGENT_BROWSER_AUTO_LOGIN=bwu`) chrome-use opens the sign-in page, signs in from the vault and runs the command once more; a write is rerun only when the adapter reported the login itself. `auth login --bwu` without `--item` now uses the one vault item named exactly the site's host when the domain matches several. (#480, fixes #479)
-- **A session keeps the tabs it created across a relay restart**, so `close` and `tab close` work on them again. (#469, fixes #461)
-- **A session is bound to its Chrome profile, not the relay host's address**, so `--browser <same profile>` works after the relay host restarts. (#476, fixes #472)
-- **A click that makes the page open a tab says when Chrome came to the front** (`openedTabWarning`). `AGENT_BROWSER_BACKGROUND_LINKS=cross-site` opens plain cross-site `target=_blank` links in a background tab instead, at the cost of one history entry and `SameSite=Strict` cookies on a link that redirects back to the page's site; it needs ab-connect 0.5.31. (#474, #477, refs #468)
+- **A relay restart no longer breaks a session.**
+  - **Tabs the session created stay its own**, so `close` and `tab close` work on them again. They are matched by the Chrome profile's identity, never by the relay's address, and tabs another session claims are never taken. (#469, fixes #461)
+  - **A session is bound to its Chrome profile, not the relay host's address**, so `--browser <same profile>` follows the profile to its new endpoint, waiting up to 20 s if it is not connected yet and never falling back to another profile. (#476, fixes #472)
+  - **Tab ids and refs stay on the same tabs.** t1, t2, ... keep pointing at the same tabs, and the first command no longer says the tabs are gone. If the tab being driven navigated or closed during the outage, its `@eN` refs are dropped instead of being matched on another page, and commands on the current tab are refused until a tab is chosen. A lost tab's label stays reserved. The tab record is written atomically, and a record that can't be read holds the session instead of renumbering. (#475, fixes #473)
+- **A click that makes the page open a tab says when Chrome came to the front** (`openedTabWarning`). `AGENT_BROWSER_BACKGROUND_LINKS=cross-site` opens plain cross-site `target=_blank` links in a background tab instead, at the cost of one history entry and `SameSite=Strict` cookies on a link that redirects back to the page's site; it is off by default and needs ab-connect 0.5.31. (#474, #477, refs #468)
 
 ### Contributors
 
